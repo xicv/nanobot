@@ -18,35 +18,42 @@ class LiteLLMProvider(LLMProvider):
     """
     
     def __init__(
-        self, 
-        api_key: str | None = None, 
+        self,
+        api_key: str | None = None,
         api_base: str | None = None,
         default_model: str = "anthropic/claude-opus-4-5"
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
-        
-        # Detect OpenRouter by api_key prefix or explicit api_base
+
+        # Detect provider type by api_key prefix, model name, or explicit api_base
         self.is_openrouter = (
             (api_key and api_key.startswith("sk-or-")) or
             (api_base and "openrouter" in api_base)
         )
-        
-        # Track if using custom endpoint (vLLM, etc.)
-        self.is_vllm = bool(api_base) and not self.is_openrouter
-        
+
+        # Detect Anthropic provider
+        self.is_anthropic = (
+            (api_key and api_key.startswith("sk-ant-")) or
+            ("anthropic" in default_model.lower() and not self.is_openrouter)
+        )
+
+        # Track if using custom endpoint (vLLM, custom Anthropic, etc.)
+        self.is_vllm = bool(api_base) and not self.is_openrouter and not self.is_anthropic
+
         # Configure LiteLLM based on provider
         if api_key:
             if self.is_openrouter:
                 # OpenRouter mode - set key
                 os.environ["OPENROUTER_API_KEY"] = api_key
+            elif self.is_anthropic:
+                # Anthropic mode - set key
+                os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif self.is_vllm:
                 # vLLM/custom endpoint - uses OpenAI-compatible API
                 os.environ["OPENAI_API_KEY"] = api_key
             elif "deepseek" in default_model:
                 os.environ.setdefault("DEEPSEEK_API_KEY", api_key)
-            elif "anthropic" in default_model:
-                os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
             elif "gemini" in default_model.lower():
@@ -55,10 +62,10 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("ZHIPUAI_API_KEY", api_key)
             elif "groq" in default_model:
                 os.environ.setdefault("GROQ_API_KEY", api_key)
-        
+
         if api_base:
             litellm.api_base = api_base
-        
+
         # Disable LiteLLM logging noise
         litellm.suppress_debug_info = True
     
@@ -84,25 +91,30 @@ class LiteLLMProvider(LLMProvider):
             LLMResponse with content and/or tool calls.
         """
         model = model or self.default_model
-        
+
         # For OpenRouter, prefix model name if not already prefixed
         if self.is_openrouter and not model.startswith("openrouter/"):
             model = f"openrouter/{model}"
-        
+
+        # For Anthropic, ensure anthropic/ prefix if not already present
+        # But skip if using custom api_base (user might use bare model names)
+        if self.is_anthropic and not self.api_base and not model.startswith("anthropic/"):
+            model = f"anthropic/{model}"
+
         # For Zhipu/Z.ai, ensure prefix is present
         # Handle cases like "glm-4.7-flash" -> "zai/glm-4.7-flash"
         if ("glm" in model.lower() or "zhipu" in model.lower()) and not (
-            model.startswith("zhipu/") or 
-            model.startswith("zai/") or 
+            model.startswith("zhipu/") or
+            model.startswith("zai/") or
             model.startswith("openrouter/")
         ):
             model = f"zai/{model}"
-        
+
         # For vLLM, use hosted_vllm/ prefix per LiteLLM docs
         # Convert openai/ prefix to hosted_vllm/ if user specified it
         if self.is_vllm:
             model = f"hosted_vllm/{model}"
-        
+
         # For Gemini, ensure gemini/ prefix if not already present
         if "gemini" in model.lower() and not model.startswith("gemini/"):
             model = f"gemini/{model}"
